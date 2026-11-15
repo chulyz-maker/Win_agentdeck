@@ -37,7 +37,8 @@
 
 ## 🛒 必要なもの
 
-- **Ulanzi Stream Controller D200**：[AliExpress の検索結果](https://www.aliexpress.com/w/wholesale-ulanzi-d200.html)から、**最安値の店でも好きな販売店でも**お選びください。[Ulanzi 公式ストア](https://www.ulanzi.com/products/stream-deck-d200)もあります。
+- **Ulanzi Stream Controller D200**：[AliExpress の Ulanzi 公式ストア](https://s.click.aliexpress.com/e/_c30mEPxl)（アフィリエイトリンク¹）で買うか、[AliExpress の検索結果](https://www.aliexpress.com/w/wholesale-ulanzi-d200.html)から**最安値の店でも好きな販売店でも**お選びください。[Ulanzi 公式サイト](https://www.ulanzi.com/products/stream-deck-d200)もあります。
+  - ¹ アフィリエイトリンクです。このリンクから購入すると agentdeck を作っている Coldbyte に少額の手数料が入ります。価格は変わりません。
   - ⚠️ 商品が本当に **D200** かどうか確認してください。名前の似た **D200X**（ノブ付き）や **D200H** は別モデルで、動作確認していません。
 - macOS（Apple Silicon）、Python 3.11+
 
