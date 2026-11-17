@@ -1,11 +1,11 @@
-## 무엇을 바꿨나요? / What changed?
+## 무엇을 바꿨나요?
 
-## 확인한 것 / How was it tested?
-- [ ] 실제 장치에서 확인 / Tested on a real D200
-- [ ] `demo.py`로 화면 확인 / Checked screens with `demo.py`
-- [ ] 한국어·영어 화면 문구 확인 (`i18n.py`) / Korean and English labels
+## 확인한 것
+- [ ] `python -m pytest -q tests` 통과
+- [ ] `python -m charliedeck --snapshot out` 으로 화면 확인
+- [ ] 시뮬레이터(`--demo --sim`) 또는 실제 D200 에서 확인
 
-## 체크리스트 / Checklist
-- [ ] 개인 정보나 시크릿이 없어요 / No personal info or secrets
-- [ ] 지우는 동작은 "길게 두 번" 확인을 거쳐요 / Destructive actions use hold-twice confirm
-- [ ] 필요하면 README·GUIDE를 고쳤어요 / Docs updated if needed
+## 체크리스트
+- [ ] 계정 · 비밀번호 · 토큰 · 회사 주소 · 개인 이메일이 코드 · 문서 · 테스트에 없어요
+- [ ] 업무 브라우저가 새로 누르는 단추가 없어요 (있으면 이유를 적었어요)
+- [ ] 필요하면 docs/CHARLIEDECK.md 를 고쳤어요
