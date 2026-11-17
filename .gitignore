@@ -1,14 +1,21 @@
-# 개인 설정 (config.example.json 을 복사해서 사용)
-config.json
-
 # 실행 산출물
 *.log
 *.out
+*.tmp
 __pycache__/
+.pytest_cache/
 .venv/
-.build/
+build/
+dist/
+*.spec.bak
 
-# 로컬 도구·참고 자료
-refs/
-.moai/
-.DS_Store
+# CharlieDeck 개인 설정·산출물 (계정·회사 주소가 들어갈 수 있으므로 올리지 않음)
+charliedeck.json
+secrets.stamp
+mail_seen.json
+snapshots/
+browser/
+.env
+.env.*
+secrets*
+*.secret

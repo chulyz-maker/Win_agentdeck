@@ -15,7 +15,7 @@ DURATION = float(sys.argv[1]) if len(sys.argv) > 1 else 90.0
 LOG_PATH = "explore.log"
 
 log_lock = threading.Lock()
-log_file = open(LOG_PATH, "w", buffering=1)
+log_file = open(LOG_PATH, "w", buffering=1, encoding="utf-8")
 
 
 def log(msg: str) -> None:

@@ -1,7 +1,11 @@
-"""Ulanzi D200 직접 제어 드라이버 (공식 앱 불필요).
+"""Ulanzi D200 HID 드라이버 (Windows 11, 공식 앱 불필요).
 
 프로토콜 출처: redphx/strmdck (MIT), jcalado/companion-surface-d200 (USBPcap 분석).
+agentdeck (MIT, (c) 2026 jakeparkcolde) 의 드라이버를 Windows 용으로 정리한 것.
 패킷: [7c 7c][cmd:2 BE][length:4 LE][data → 1024 바이트 패딩]
+
+Windows 기본 HID 드라이버로 동작한다 (Zadig 등으로 드라이버를 바꾸지 말 것).
+`hid`(hidapi) 는 장치를 열 때만 불러오므로, 장치·hidapi 없이도 build_zip · render_icon 은 쓸 수 있다.
 """
 
 from __future__ import annotations
@@ -9,7 +13,6 @@ from __future__ import annotations
 import hashlib
 import io
 import json
-import os
 import random
 import string
 import threading
@@ -18,16 +21,15 @@ import zipfile
 from dataclasses import dataclass
 from typing import Callable
 
-import hid
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
-from i18n import t
+import fonts
 
 VID, PID = 0x2207, 0x0019
 PACKET = 1024
 HEADER = 8
 COLS, ROWS = 5, 3
-BUTTON_COUNT = 13  # 5 + 5 + 3, 마지막 줄 3_2~4_2 는 작은 창(458x196)
+BUTTON_COUNT = 13  # 5 + 5 + 3, 마지막 줄 3_2~4_2 는 넓은 칸(458x196)
 ICON = 196
 
 CMD_SET_BUTTONS = 0x0001
@@ -35,11 +37,10 @@ CMD_SMALL_WINDOW = 0x0006
 CMD_BRIGHTNESS = 0x000A
 CMD_LABEL_STYLE = 0x000B
 CMD_PARTIAL_UPDATE = 0x000D
-SMALL_BACKGROUND = 2  # 작은 창 모드: 배경 이미지
+SMALL_BACKGROUND = 2  # 넓은 칸 모드: 배경 이미지
 IN_BUTTON = 0x0101
 IN_DEVICE_INFO = 0x0303
-
-FONT_PATH = "/System/Library/Fonts/AppleSDGothicNeo.ttc"  # 한글 지원
+VENDOR_USAGE_PAGE_MIN = 0xFF00  # 벤더 정의 HID 컬렉션
 
 
 @dataclass
@@ -52,102 +53,20 @@ class InputEvent:
 
 @dataclass
 class Button:
-    """버튼 하나의 표시 내용."""
+    """버튼 하나. image(196x196 PNG) 가 있으면 그대로 보내고, 없으면 title 을 간단히 그린다."""
 
+    image: bytes | None = None
     title: str = ""
-    sub: str = ""
-    header: str = ""  # 상단 작은 라벨
     bg: str = "#1e1e2e"
     fg: str = "#ffffff"
-    accent: str | None = None  # 하단 게이지 색
-    ratio: float | None = None  # 0~1 게이지
-    # 미니 게이지 여러 개: (라벨, 0~1, 색). 지정하면 sub/ratio 대신 하단에 줄 단위로 그린다
-    bars: list[tuple] | None = None
-    border: str | None = None  # 강조 테두리 색 (경고 등)
-    header_fg: str | None = None  # 헤더 글자색 (없으면 accent)
-    raw_header: bool = False
-    image: bytes | None = None  # 미리 그린 196x196 PNG (어항 등). 있으면 그대로 보낸다  # 헤더가 사용자 데이터(종목·프로젝트·pane 이름)면 번역하지 않음
-    fill: float | None = None  # 0~1: 아래에서부터 칸을 채우는 비율 (타이머)
-    fill_color: str = "#f7768e"
-
-
-def _fit(d: ImageDraw.ImageDraw, text: str, size: int, max_w: int) -> ImageFont.FreeTypeFont:
-    """텍스트가 max_w 안에 들어갈 때까지 글자 크기를 줄인다."""
-    while size > 12:
-        f = ImageFont.truetype(FONT_PATH, size)
-        if d.textlength(text, font=f) <= max_w:
-            return f
-        size -= 2
-    return ImageFont.truetype(FONT_PATH, size)
-
-
-def _render_bars(d: ImageDraw.ImageDraw, btn: Button) -> None:
-    """헤더 + (큰 숫자) + 라벨 붙은 미니 게이지 여러 줄.
-
-    bars 항목: (라벨, 0~1, 색) 또는 (라벨, 0~1, 색, 오른쪽 값 텍스트)
-    title 이 비어 있으면 큰 숫자 없이 게이지를 위로 올려 3줄까지 여유 있게 그린다.
-    """
-    tiny = ImageFont.truetype(FONT_PATH, 22)
-    lab = ImageFont.truetype(FONT_PATH, 19)
-    if btn.header:
-        d.text((ICON / 2, 24), btn.header, font=_fit(d, btn.header, 22, ICON - 20), fill=btn.accent or btn.fg, anchor="mm")
-    if btn.title:
-        big = ImageFont.truetype(FONT_PATH, 46 if len(btn.title) <= 4 else 34)
-        d.text((ICON / 2, 70), btn.title, font=big, fill=btn.fg, anchor="mm")
-        y, step = 112, 28
-    else:
-        y, step = 54, 36
-    label_w = max((d.textlength(b[0], font=lab) for b in btn.bars or []), default=0)
-    for bar in btn.bars or []:
-        label, ratio, color = bar[:3]
-        value = bar[3] if len(bar) > 3 else None
-        d.text((12, y + 7), label, font=lab, fill="#a9b1d6", anchor="lm")
-        x0, x1 = int(12 + label_w + 8), ICON - (52 if value else 14)
-        d.rounded_rectangle((x0, y, x1, y + 14), 7, fill="#3a3a4a")
-        if ratio is not None and ratio > 0:
-            d.rounded_rectangle((x0, y, x0 + (x1 - x0) * min(1.0, ratio), y + 14), 7, fill=color)
-        if value:
-            d.text((ICON - 10, y + 7), value, font=lab, fill="#c0caf5", anchor="rm")
-        y += step
-    if btn.sub:
-        d.text((ICON / 2, min(y + 10, ICON - 16)), btn.sub, font=lab, fill="#a9b1d6", anchor="mm")
 
 
 def render_icon(btn: Button) -> bytes:
-    """버튼 정보를 196x196 PNG 로 그린다. 문구는 화면 언어(i18n)에 맞춰 바꾼다."""
-    from dataclasses import replace
-
-    from i18n import tr
-
     if btn.image is not None:
         return btn.image
-    btn = replace(btn, header=btn.header if btn.raw_header else tr(btn.header), title=tr(btn.title), sub=tr(btn.sub),
-                  bars=[(tr(b[0]), *b[1:3], *(tr(x) for x in b[3:])) for b in btn.bars] if btn.bars else None)
     img = Image.new("RGB", (ICON, ICON), btn.bg)
     d = ImageDraw.Draw(img)
-    if btn.fill is not None and btn.fill > 0:
-        top = int(ICON * (1 - min(1.0, btn.fill)))
-        d.rectangle((0, top, ICON, ICON), fill=btn.fill_color)
-    if btn.border:
-        d.rounded_rectangle((2, 2, ICON - 3, ICON - 3), 18, outline=btn.border, width=5)
-    if btn.bars:
-        _render_bars(d, btn)
-        buf = io.BytesIO()
-        img.save(buf, "PNG")
-        return buf.getvalue()
-    big = ImageFont.truetype(FONT_PATH, 52 if len(btn.title) <= 5 else 34)
-    small = ImageFont.truetype(FONT_PATH, 24)
-    tiny = ImageFont.truetype(FONT_PATH, 22)
-    if btn.header:
-        d.text((ICON / 2, 26), btn.header, font=_fit(d, btn.header, 22, ICON - 20), fill=btn.header_fg or btn.accent or btn.fg, anchor="mm")
-    d.text((ICON / 2, 84), btn.title, font=_fit(d, btn.title, big.size, ICON - 16), fill=btn.fg, anchor="mm")
-    if btn.sub:
-        d.text((ICON / 2, 134), btn.sub, font=_fit(d, btn.sub, small.size, ICON - 14), fill="#a9b1d6" if btn.fg == "#ffffff" else btn.fg, anchor="mm")
-    if btn.ratio is not None:
-        r = max(0.0, min(1.0, btn.ratio))
-        d.rounded_rectangle((16, 160, ICON - 16, 176), 8, fill="#3a3a4a")
-        if r > 0:
-            d.rounded_rectangle((16, 160, 16 + (ICON - 32) * r, 176), 8, fill=btn.accent or "#7aa2f7")
+    d.text((ICON / 2, ICON / 2), btn.title, font=fonts.kr(52, "bold"), fill=btn.fg, anchor="mm")
     buf = io.BytesIO()
     img.save(buf, "PNG")
     return buf.getvalue()
@@ -168,7 +87,7 @@ def _payload_safe(payload: bytes) -> bool:
 def build_zip(buttons: dict[int, Button], small_png: bytes | None = None) -> bytes:
     """manifest.json + 아이콘 PNG 를 ZIP 으로 묶는다 (펌웨어 버그 회피 포함).
 
-    small_png: 오른쪽 아래 넓은 칸(3_2, 458x196) 배경 이미지. 주면 SmallViewMode 2 로 표시된다.
+    small_png: 오른쪽 아래 넓은 칸(3_2, 458x196) 배경 이미지.
     """
     icons: dict[str, bytes] = {}
     manifest: dict[str, dict] = {}
@@ -200,14 +119,55 @@ def build_zip(buttons: dict[int, Button], small_png: bytes | None = None) -> byt
     raise RuntimeError("could not build firmware-safe zip")
 
 
+def _hid():
+    """hidapi 를 필요할 때만 불러온다 (pip install hidapi)."""
+    try:
+        import hid  # noqa: PLC0415
+    except ImportError as e:
+        raise RuntimeError("hidapi 가 설치되지 않았어요: pip install hidapi  (장치 없이 보려면 --demo --sim)") from e
+    return hid
+
+
+def pick_interface(infos: list[dict]) -> dict | None:
+    """D200 제어용 HID 인터페이스를 고른다.
+
+    Windows 에서는 같은 장치가 &mi_00 / &col01 처럼 여러 경로로 보이고 interface_number 가 -1 일 수 있다.
+    → interface 0 + 벤더 usage page, interface 0, 벤더 usage page(0xFF00 이상), 첫 번째 순으로 고른다.
+    키보드·마우스 컬렉션은 Windows 가 독점하므로 열면 Access denied 가 난다.
+    """
+    if not infos:
+        return None
+    for d in infos:
+        if d.get("interface_number") == 0 and d.get("usage_page", 0) >= VENDOR_USAGE_PAGE_MIN:
+            return d
+    for d in infos:
+        if d.get("interface_number") == 0:
+            return d
+    for d in infos:
+        if d.get("usage_page", 0) >= VENDOR_USAGE_PAGE_MIN:
+            return d
+    return infos[0]
+
+
+def list_devices() -> list[dict]:
+    """연결된 D200 HID 경로 목록 (진단용: --list-devices)."""
+    hid = _hid()
+    return [{"path": d["path"].decode("utf-8", "replace") if isinstance(d["path"], bytes) else str(d["path"]),
+             "interface_number": d.get("interface_number"), "usage_page": hex(d.get("usage_page", 0)),
+             "usage": hex(d.get("usage", 0)), "product": d.get("product_string")} for d in hid.enumerate(VID, PID)]
+
+
 class D200:
     def __init__(self) -> None:
-        info = next((d for d in hid.enumerate(VID, PID) if d["interface_number"] == 0), None)
+        hid = _hid()
+        info = pick_interface(hid.enumerate(VID, PID))
         if not info:
-            raise RuntimeError(t("D200 을 찾지 못했어요 (USB 연결과 Ulanzi Studio 종료를 확인하세요)",
-                                 "D200 not found (check the USB cable and quit Ulanzi Studio)"))
+            raise RuntimeError("D200 을 찾지 못했어요 (USB 연결과 Ulanzi Studio 종료를 확인하세요)")
         self.dev = hid.device()
-        self.dev.open_path(info["path"])
+        try:
+            self.dev.open_path(info["path"])
+        except OSError as e:
+            raise RuntimeError(f"D200 을 열지 못했어요 ({e}). Ulanzi Studio 등 다른 프로그램이 쓰고 있는지 확인하세요") from e
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self.disconnected = threading.Event()
@@ -219,7 +179,7 @@ class D200:
     def _write(self, packets: list[bytes]) -> None:
         with self._lock:
             for p in packets:
-                self.dev.write(b"\x00" + p)  # report ID 0 (번호 없는 리포트)
+                self.dev.write(b"\x00" + p)  # report ID 0 (Windows 는 앞 0바이트가 반드시 필요)
 
     def send(self, cmd: int, data: bytes) -> None:
         self._write([_frame(cmd, len(data), data)])
@@ -228,7 +188,7 @@ class D200:
         self.send(CMD_BRIGHTNESS, str(max(0, min(100, percent))).encode())
 
     def set_small_window(self, mode: int = 1, cpu: int = 0, mem: int = 0, gpu: int = 0) -> None:
-        """mode: 0=CPU/RAM/GPU 통계, 1=아날로그 시계, 200~203=디지털 시계."""
+        """mode: 0=CPU/RAM/GPU 통계, 1=아날로그 시계, 2=배경 이미지, 200~203=디지털 시계."""
         self._small = f"{mode}|{cpu}|{mem}|{time.strftime('%H:%M:%S')}|{gpu}"
         self.send(CMD_SMALL_WINDOW, self._small.encode())
 
@@ -261,7 +221,7 @@ class D200:
             try:
                 r = self.dev.read(PACKET, 100)
             except (OSError, ValueError):
-                # USB 분리 등: 끊김 표시 후 종료 (상위에서 프로세스를 끝내면 launchd 가 재시작)
+                # USB 분리 등: 끊김 표시 후 종료 (상위에서 다시 연결한다)
                 self.disconnected.set()
                 self._stop.set()
                 return
@@ -269,10 +229,13 @@ class D200:
                 self._parse(bytes(r))
 
     def _keepalive_loop(self) -> None:
-        # 앱 연결이 끊긴 걸로 판단하지 않도록 주기적으로 작은 창 데이터를 보낸다
+        # 앱 연결이 끊긴 걸로 판단하지 않도록 주기적으로 넓은 칸 데이터를 보낸다
         while not self._stop.wait(5):
-            mode = int(self._small.split("|")[0])
-            self.set_small_window(mode)
+            try:
+                self.set_small_window(int(self._small.split("|")[0]))
+            except (OSError, ValueError):
+                self.disconnected.set()
+                return
 
     def start(self) -> None:
         threading.Thread(target=self._read_loop, daemon=True).start()
@@ -281,24 +244,22 @@ class D200:
     def close(self) -> None:
         self._stop.set()
         time.sleep(0.2)
-        self.dev.close()
+        try:
+            self.dev.close()
+        except (OSError, ValueError):
+            pass
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # 장치 점검: python d200.py [초]
     import sys
 
     duration = float(sys.argv[1]) if len(sys.argv) > 1 else 60
     deck = D200()
     palette = ["#f7768e", "#ff9e64", "#e0af68", "#9ece6a", "#7dcfff", "#7aa2f7", "#bb9af7"]
-    buttons = {i: Button(title=f"{i}", sub="눌러봐", bg="#1a1b26", accent=palette[i % 7], ratio=i / 12) for i in range(BUTTON_COUNT)}
-    counts = {i: 0 for i in range(BUTTON_COUNT)}
+    buttons = {i: Button(title=str(i), bg=palette[i % 7], fg="#1a1b26") for i in range(BUTTON_COUNT)}
 
     def handle(ev: InputEvent) -> None:
         print(f"{time.strftime('%H:%M:%S')} {ev}", flush=True)
-        if ev.kind == "button" and ev.action == "press" and ev.index in buttons:
-            counts[ev.index] += 1
-            buttons[ev.index] = Button(title=f"{ev.index}", sub=f"{counts[ev.index]}회", bg=palette[ev.index % 7], fg="#1a1b26")
-            deck.set_buttons(buttons)
 
     deck.on_event = handle
     deck.on_info = lambda s: print("DEVICE INFO:", s, flush=True)
@@ -306,9 +267,8 @@ if __name__ == "__main__":
     deck.set_brightness(80)
     deck.set_buttons(buttons)
     deck.set_small_window(mode=1)
-    print(f"=== listening for button events for {duration:.0f}s ===", flush=True)
+    print(f"=== {duration:.0f}초 동안 버튼 입력을 기다립니다 ===", flush=True)
     try:
         time.sleep(duration)
     finally:
         deck.close()
-        print("=== done ===", flush=True)

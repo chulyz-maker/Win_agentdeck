@@ -1,3 +1,11 @@
+CharlieDeck
+===========
+CharlieDeck is a Windows 11 work dashboard for the Ulanzi D200, built on agentdeck
+(https://github.com/jakeparkcolde/agentdeck), MIT License, Copyright (c) 2026 jakeparkcolde.
+The D200 driver (d200.py) and HID explorer (explore.py) come from agentdeck; the macOS
+dashboard features were removed. The original LICENSE file is kept unchanged and applies
+to the whole repository.
+
 The D200 wire protocol implementation is based on redphx/strmdck
 (https://github.com/redphx/strmdck), MIT License, and the protocol notes in
 jcalado/companion-surface-d200 (https://github.com/jcalado/companion-surface-d200).
